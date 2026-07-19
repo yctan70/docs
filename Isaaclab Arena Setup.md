@@ -288,7 +288,7 @@ Backup of the pre-edit USD: `h1_box_scene_edit.usd.bak-no-rigidbody`.
 | Robot spawn | (0.0, 0.4, −1.145), yaw −90° | hw-forward faces +y toward the conveyor |
 | Cardbox | (−0.03, +2.18), bottom z=−0.06 | on conveyor, ~1.12 m above floor |
 | Pallet | x −1.96…−1.16, y −0.70…+0.51 | on a dolly to the robot's left; top z=−0.67 (0.51 m above floor). Moved 2026-07-15 another 0.5 m away from the conveyor (dolly center (−1.55, 0.40) → (−1.55, −0.10)); backup `h1_box_scene_edit.usd.bak-pallet-y040`. (Earlier move 2026-07-10 from the aisle spot y≈−5.4, backup `.bak-pallet-behind`.) |
-| Box size | 0.42 × 0.40 × 0.40 m | bbox of SM_CardBoxA_01 |
+| Box size | 0.42 × 0.35 × 0.35 m | true size of SM_CardBoxA_01 (2026-07-18: earlier 0.42 × 0.40 × 0.40 / 0.42 × 0.395 × 0.395 figures were the AABB of the box while its spawn was tilted ~7.5°; it now spawns level) |
 
 ### Robot config details
 
@@ -408,6 +408,10 @@ python -u isaaclab_arena/scripts/h1_box_lock_test.py --headless \
 # survives a drive toward the pallet, pallet at its moved position):
 python -u isaaclab_arena/scripts/h1_held_box_start_test.py --headless \
     --disable_pinocchio h1_palletize --episode_length_s 300
+# box-pool respawn (PASS = each respawn welds a FRESH box at the grip,
+# released + parked boxes untouched):
+python -u isaaclab_arena/scripts/h1_box_pool_respawn_test.py --headless \
+    --disable_pinocchio h1_palletize --episode_length_s 300 --held_box_grip end
 ```
 
 ### Upper-body PD gains (re-tuned 2026-07-11)
@@ -916,6 +920,147 @@ unchanged, ~104mm vs ~114mm pre-fix — reach/convergence not regressed).
 Full detail in `PLACE_TRAJECTORY_PLAN.md`'s "Tenth issue found" section.
 Not yet re-tested live.
 
+**Eleventh issue found (2026-07-18, reported live)**: "box shaking
+excessively along scripted trajectory" (suspected plate contact, esp. left
+arm, + not enough box-to-pallet-top clearance) and "hold the box initially
+with level orientation". Three compounding root causes found and fixed:
+(A) the box really was spawned tilted ~7.5° — the "mesh is counter-rotated
+inside the prim" note above was wrong (see the corrected TODO 1 below);
+spawn quats are now level. (B) `solve_place_trajectory` drove the right EE
+LINK ORIGIN to BOX-CENTER targets; measured offset between those points at
+the "end" carry pose is (+0.037, −0.300, −0.056) m — so every placement
+was ~30 cm off in y (this, not reach, was most of the documented "column
+limit"/290 mm reference-case residual) and the real box center rode 56 mm
+lower than solved, planting the box bottom into the pallet top at hover.
+Targets are now converted to EE space via `_BOX_CENTER_B_BY_GRIP` (offset
+captured in the EE local frame at the carry pose, rotated by trigger-time
+EE orientation; `solve_place_trajectory` gained a `grip` param wired to
+`--held-box-grip`). (C) the ramp stages still joint-MIRRORED the left arm
+— invalid ever since the eighth fix made them track non-symmetric targets;
+the left plate chased a mirror-image phantom into the welded box (~10 mm
+nominal clearance/side). Left arm now solved independently on EVERY stage
+toward `right_actual + grip_offset`, backed off `H1_QUEST_PLACE_LEFT_GAP_M`
+(default 0.010 m) along the grip axis; `_PLACE_TRANSIT_CLEARANCE_M` raised
+0.08 → 0.12. Verified offline: row0/col1 final residual 104 → 13 mm
+(per-stage error now actually converges), row1/col1 2.7 mm, col0 470 →
+~230 mm (still a genuine cross-body limit — large `right_err_mm` = finish
+manually). `h1_held_box_start_test.py --held_box_grip end` re-run headless
+with the level spawn: PASS (drift 2.45/3.87 mm, pallet gap 0.323 m).
+Follow-up not done: `BoxSpec` dims are still the tilted-AABB values
+(0.395/0.42/0.395 vs true 0.42/0.35/0.35) — currently errs in the safe
+direction (targets ~22 mm high, loose packing); correct before flush-
+seating/ACT work. Full detail in `PLACE_TRAJECTORY_PLAN.md`'s "Eleventh
+issue found" section. Not yet re-tested live.
+
+**Twelfth revision (2026-07-18, same day)**: scripted trajectory now uses
+live inputs and an honest solver. (1) Base yaw compensated — the trigger
+used to discard `base_quat` (translation-only target conversion, silently
+assumed the parked identity-yaw heading; any base turn rotated all targets).
+(2) `teleop_h1_zmq.py` publishes `box_center`/`box_quat` (true box pose,
+world, wxyz) in the ZMQ state payload; the solver uses it for the EE↔box
+offset (exact regardless of grip), falling back to the carry-pose-derived
+offset for old feeds; trigger log shows source + box tilt (warns >5°).
+(3) `FullBodyArmIK` never actually enforced "only this arm's joints free" —
+placo recruited torso pitch during every solve, then `set_torso` snapped it
+back (0.1→84 mm on identical joints): ALL previous per-stage error numbers
+were optimistic phantoms. Non-arm DOFs are now masked. (4) QP oscillation
+at the reach boundary (~80 mm between position-good and orientation-good
+phases) — convergence now keeps/restores the best state, runs bounded
+settle iterations (without which the residual stage never solved at all),
+and survives infeasible QPs (elbow-cap-aware retry clamp). (5) Residual
+stage frees torso pitch and commands the SOLVED pitch. Offline matrix:
+row0/col1 0.48 mm, yaw+15° 0.16 mm, row1 0.00 mm; col0/yaw−20/layer1
+remain honestly hard (140–250 mm → finish manually). RESTART
+`teleop_h1_zmq.py` to get the box keys on the feed. Full detail in
+`PLACE_TRAJECTORY_PLAN.md`'s "Twelfth revision" section. Not yet re-tested
+live.
+
+**Box pool for respawns (2026-07-18, user-requested)**: the 'n' respawn now
+consumes a FRESH box instead of teleporting the single cardbox back into the
+grip (which yanked it off the pallet after a placement). One-time USD edit
+`add_cardbox_pool.py` (repo root, run with pxr in `env_isaaclab6` — already
+run; backup `h1_box_scene_edit.usd.bak-single-box`) authored
+`/World/Boxes/cardbox_pool_1..7` as *internal references* to `cardbox_0`
+(mesh+collision+material+rigid-body APIs all compose through), parked level
+in a 2×4 grid on the open aisle floor (x −1.30/−1.95, y −4.0…−5.8, the
+pallet's pre-2026-07-10 spot). `h1_palletize_environment.py` registers them
+as scene entities `cardbox_1..7` via `--num_boxes` (default 8, subparser
+arg; 1 = old single-box behavior and the fallback if the USD lacks the pool).
+`teleop_h1_zmq.py` keeps a pool cursor: `--held_box_start` consumes box 0,
+each respawn releases the weld, swaps it to the next box (new
+`H1BoxLock.set_box`, also switches the `box_center` state-feed publish) and
+runs the usual carry-pose apply with `teleport_base=False`; exhausted pool →
+warning, 'n' ignored (no wraparound — that would grab a placed box). The
+operator parks the robot so the fresh box's carry pose doesn't intersect
+already-placed boxes. Verified headless: `h1_box_pool_respawn_test.py`
+(start + 2 respawn cycles: fresh box welds at the grip target, released
+boxes and still-parked pool boxes each move < 30 mm during respawns) and
+`h1_held_box_start_test.py` re-PASS with the 8-box scene. Not yet tested
+live.
+
+**Placement planner (2026-07-19, user-requested)**: new offline planner
+`isaaclab_arena/scripts/h1_place_planner.py` — for every 2×2×2 cell in
+placement order, finds the best base PARKING pose (yaw 0, facing −x) and
+the best COMMANDED end target = cell + standoff AWAY from already-placed
+neighbors (+x / +y, default 0.10 m; closed manually after playback). Two
+gates per candidate: (1) geometry — AABB sweep of the carried box (inflated
+0.03 m for EE plates + tracking) along the actual lift→traverse→descend
+path, ≥ 0.02 m from every placed box, INCLUDING the start carry pose (at
+carry height the box rides below the layer-0 tops, which is what forces
+layer-1 parking far back); (2) reach — `solve_place_trajectory` run for
+real, final right-EE residual ≤ 5 mm. Search: +x standoff (up to 0.55 m
+slide-in for layer ≥ 1), start torso lift (≤ 0.45 hw limit), parking depth
+d ∈ [0.621, 1.016] (the two live-validated endpoints); base keep-out
+x ≥ −0.754 (0.406 m chassis half-depth from base_link.STL vs pallet edge
+−1.16). **Results**: all 4 layer-0 cells hit 0.48 mm from the same relative
+pose — park at (cell_x+standoff_x+1.016, cell_y+standoff_y−0.0299) — with
+0.04–0.13 m swept clearance; layer-1 near row best ~25 mm (d=0.85, 0.55 m
+standoff, seat by DRIVING forward — hovering box clears layer-0 tops by
+3 cm), far row best ~138 mm (start-clearance pins d=1.016 at layer-1
+height → over the reach envelope; manual finish). Extra lift (0.35→0.45)
+bought only ~4 mm — layer-1 is pitch-mechanism-limited, not lift-limited.
+Writes `~/h1_box_scene_bundle/h1_pallet_plan.json`; `h1_quest_teleop.py`
+auto-loads it (`--pallet-plan`, '' disables): cell selection keys print the
+recommended parking pose + lift + seat push, X commands the plan's offset
+target instead of the raw cell center, and warns if parked > 5 cm/5° or
+lift > 0.02 off plan. Regenerate with
+`python3 isaaclab_arena/scripts/h1_place_planner.py` (a few minutes; every
+candidate goes through the real QP). Not yet tested live.
+
+**Respawn teleports to planned parking (2026-07-19, user-requested)**: with
+a plan loaded, 'n' now also TELEPORTS the base to the plan's parking spot
+for the CURRENT target cell (select the cell with r/c/l BEFORE 'n') — safe
+because the planner's start-pose gate verified the carry pose there clears
+every placed box. Teleport, not drive, per user decision: the real robot's
+commercial base controller parks reliably, the sim swerve controller
+doesn't. Plumbing: `/respawn_box` is now `std_msgs/Float64MultiArray`
+(empty = plain respawn/base stays, `[x, y, yaw_rad]` = teleport) — **quest
+node and bridge must be restarted together** (topic type change); bridge
+adds optional `"base_pose"` to the ZMQ respawn message;
+`apply_held_box_start(..., base_pose_w=(x, y, yaw))` does the root write
+(z from profile spawn height). Torso lift is NOT teleported — jog to the
+plan's lift before X (X-time warning reminds you). Verified headless:
+`h1_box_pool_respawn_test.py` respawn cycle 2 now goes through
+`base_pose_w` and checks the base lands within 30 mm / 2° of the request.
+
+**Startup parks at the plan too (2026-07-19, user-requested)**:
+`teleop_h1_zmq.py --held_box_start` now spawns at the plan's parking spot
+for `--start_cell` (new subparser args `--pallet_plan` — same JSON default —
+and `--start_cell R C L`, default `0 0 0` = first in placement order)
+instead of the fixed profile pose, so the FIRST box needs no manual drive
+either; missing plan/cell → fixed pose + warning. To match, the quest
+node's `--place-col` default changed 1 → 0 (cell (0,0,0) is the placement
+start; col 1 was the historical validated-reference cell). NOTE for bare
+`--test-plan-place` runs: the default base x/y is still the COL-1 parking
+spot — pass `--place-col 1` (or `--place-base-y -0.5199` for col 0) to
+reproduce the 0.48 mm reference; both pairings re-verified 0.48 mm.
+Smoke-tested headless: startup log shows "parked at plan cell (0, 0, 0)
+(-0.746, -0.520)", box center (-1.470, -0.520, -0.451) = the planner's
+predicted carry position, no sim-step errors. Also fixed same day: the
+first live run threw `cannot access local variable '_respawn_base_pose'`
+every step — `main()` assigned it without declaring it global (the headless
+test misses this path since it calls `apply_held_box_start` directly).
+
 ### Next phase TODOs
 
 1. **Held-box start state — DONE 2026-07-15 (revised same day, see below).**
@@ -957,9 +1102,17 @@ Not yet re-tested live.
    `_ARM_LIMITS` (tighter than the URDF, e.g. wrist-pitch ≤ 0.436 hw) or `_sync_targets`
    clamps and jumps the arms on attach. Mirror map in hw convention flips joints
    1,3,5,7 (yaws/rolls). cardbox_0's rigid-body root sits at the box BOTTOM CENTER:
-   geometry center = root + R_box·(0, 0, 0.175); authored world rotation
-   (0.99756, 0.06976, 0, 0) (≈8° roll — the mesh is counter-rotated inside the prim,
-   so keep that quat or the visual box appears tilted). TRAP: measuring the prim's own
+   geometry center = root + R_box·(0, 0, 0.175). **CORRECTED 2026-07-18:** the box
+   now spawns LEVEL (identity roll for `side`, pure +90° yaw for `end`). The earlier
+   claim here — authored world rotation (0.99756, 0.06976, 0, 0) ≈8° roll with "the
+   mesh counter-rotated inside the prim, so keep that quat or the visual box appears
+   tilted" — was exactly backwards: pxr inspection shows the mesh child has an
+   IDENTITY local rotation (points axis-aligned in the root-local frame, bottom at
+   local z=0), so keeping the authored quat is what held the box visibly tilted
+   ~7.5° (the "pre-existing baked-in tilt" of the fourth place-trajectory bug) and
+   hung one bottom edge ~2 cm lower over the pallet. True box size is
+   0.42 × 0.35 × 0.35 m — the 0.42 × 0.395 × 0.395 figure used in these notes is the
+   AABB of the *tilted* box. TRAP: measuring the prim's own
    translate op against the world bbox misses the /World/Boxes parent xform (y+2.1535)
    and reads as a bogus (0, 2.13, 0.17) offset — that bug put the "held" box 2.1 m to
    the robot's left. Use ComputeLocalToWorldTransform (what ObjectReference does).
