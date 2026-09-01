@@ -176,10 +176,7 @@ The **post-task drift**. The demonstrations end about 2.3 s after the deepest pu
 
 ## Superseded: joint increments
 
-`lerobot/tools/delta_action_dataset.py --mode increment` remains, and
-`act_h1_flushoracle_incr` is the checkpoint. It works — 87% push depth at
-r2c0L0 against the absolute policy's 12% — and it is what the runs above used.
-Its `--mode lead` variant (`a[t] - s[t]`, anchored on the MEASUREMENT) does not work and should not be run: it traps a joint below the servo deadband (2026-08-31 run 1, servo alarm) and slides under the driver's soft-limit clamp, because an anchored target never leaves the measurement's neighborhood. See `project-h1-delta-actions` for the full account.
+`lerobot/tools/delta_action_dataset.py --mode increment` remains, and `act_h1_flushoracle_incr` is the checkpoint. It works — 87% push depth at r2c0L0 against the absolute policy's 12% — and it is what the runs above used. Its `--mode lead` variant (`a[t] - s[t]`, anchored on the MEASUREMENT) does not work and should not be run: it traps a joint below the servo deadband (2026-08-31 run 1, servo alarm) and slides under the driver's soft-limit clamp, because an anchored target never leaves the measurement's neighborhood. See `project-h1-delta-actions` for the full account.
 
 
 
