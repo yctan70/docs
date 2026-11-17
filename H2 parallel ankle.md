@@ -74,7 +74,7 @@ $$
 Writing the left side as √(P² + Q²) cos(θ − φ) gives the motor angle:
 
 $$
-\theta = \operatorname{atan2}(Q, P) + \arccos\frac{K}{\sqrt{P^2 + Q^2}}
+\theta = \mathrm{atan2}(Q, P) + \arccos\frac{K}{\sqrt{P^2 + Q^2}}
 $$
 
 Notes on the solution:
@@ -134,7 +134,7 @@ The off-diagonal terms are 1.6·10⁻⁴ k. Different gains on the two motors do
 **Getting even stiffness.** th010's stack does the whole joint PD itself at 500 Hz and sends motor torques J⁻ᵀ τ\_j. Our AB backend keeps the drive PD (k = 76, d = 1.38: pitch 100 / 1.82, as th010's) and adds only what is missing, as motor feed-forward torque:
 
 $$
-K_m = J^{-\mathsf T}\left(\operatorname{diag}(k_r, k_p) - k\,J^{\mathsf T}J\right)J^{-1},\quad D_m = J^{-\mathsf T}\left(\operatorname{diag}(d_r, d_p) - d\,J^{\mathsf T}J\right)J^{-1},\quad \tau_{ff} = K_m\,(m^* - m) - D_m\,\dot m
+K_m = J^{-\mathsf T}\left(\mathrm{diag}(k_r, k_p) - k\,J^{\mathsf T}J\right)J^{-1},\quad D_m = J^{-\mathsf T}\left(\mathrm{diag}(d_r, d_p) - d\,J^{\mathsf T}J\right)J^{-1},\quad \tau_{ff} = K_m\,(m^* - m) - D_m\,\dot m
 $$
 
 The gains K\_m and D\_m are refreshed every 20 ms policy tick at the current pose. The 500 Hz loop only needs raw motor angles and speeds, with no forward kinematics. With k\_r = 100 and d\_r = 0.96, drives plus loop give the joint 100.0 / 100.4 stiffness and 0.96 / 1.82 damping on roll / pitch.
